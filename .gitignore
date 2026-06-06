@@ -1,0 +1,8 @@
+cat > .gitignore << 'EOF'
+bin/
+obj/
+.vs/
+appsettings.Development.json
+*.user
+*.suo
+EOF

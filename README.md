@@ -112,22 +112,13 @@ The system communicates with a dedicated FastAPI-based ALPR service to recognize
 
 ```text
 
-Iranian-mYPMS-client/ 
-
-│
-
+Iranian-mypms-client/
 ├── Program.cs              # Application entry point
-
 ├── HomeController.cs       # Main traffic and parking operations
-
 ├── SATPA.cs                # ALPR FastAPI client service
-
 ├── AlprOptions.cs          # ALPR configuration model
-
 ├── AlprResult.cs           # ALPR response model
-
 ├── appsettings.json        # Application configuration
-
 └── .gitignore
 
 ```
@@ -140,22 +131,13 @@ Iranian-mYPMS-client/
 
 # 🔧 Prerequisites
 
-
-
-| Tool                 | Recommended Version        |
-
-| -------------------- | -------------------------- |
-
-| .NET SDK             | 8.0+                       |
-
-| SQL Server           | 2019+                      |
-
-| FastAPI ALPR Service | Running and reachable      |
-
-| IP Camera            | Snapshot-capable camera    |
-
-| Windows Server       | Recommended for production |
-
+| Tool                 | Recommended Version |
+|---------------------|---------------------|
+| .NET SDK            | 8.0+                |
+| SQL Server          | 2019+               |
+| FastAPI ALPR Service| Running and reachable |
+| IP Camera           | Snapshot-capable camera |
+| Windows Server      | Recommended for production |
 
 
 ---
@@ -322,53 +304,20 @@ Example:
 
 ```text
 
-┌──────────────┐
-
-│  IP Camera   │
-
-└──────┬───────┘
-
-       │ Snapshot
-
-       ▼
-
-┌──────────────────────────┐
-
-│    Iranian-mYPMS-client  │ 
-
-│      ASP.NET Core        │
-
-└──────────┬───────────────┘
-
-           │
-
-           │ POST /recognize
-
-           ▼
-
-┌──────────────────────────┐
-
-│     Iranian ALPR API     │
-
-│         FastAPI          │
-
-└──────────┬───────────────┘
-
-           │
-
-           ▼
-
-     License Plate
-
-      + Confidence
-
-
-
-┌──────────────┐
-
-│ SQL Server   │
-
-└──────────────┘
+IP Camera
+   │ Snapshot
+   ▼
+Iranian-mypms-client (ASP.NET Core)
+   │
+   │ POST /recognize
+   ▼
+FastAPI ALPR Service
+   │
+   ▼
+License Plate + Confidence
+   │
+   ▼
+SQL Server
 
 ```
 
@@ -522,8 +471,5 @@ Temporary images are automatically cleaned after several hours.
 
 # 📄 License
 
-
-
-This project is licensed under the MIT License.
-
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 

@@ -19,14 +19,14 @@ namespace mYPMS.Models;
 /// </summary>
 public sealed class SatpaClient
 {
-    private readonly HttpClient          _http;
-    private readonly AlprOptions         _opt;
+    private readonly HttpClient           _http;
+    private readonly AlprOptions          _opt;
     private readonly ILogger<SatpaClient> _logger;
 
     public SatpaClient(
-        HttpClient                 http,
-        IOptions<AlprOptions>      opt,
-        ILogger<SatpaClient>       logger)
+        HttpClient            http,
+        IOptions<AlprOptions> opt,
+        ILogger<SatpaClient>  logger)
     {
         _opt    = opt.Value;
         _logger = logger;
@@ -63,8 +63,8 @@ public sealed class SatpaClient
     /// <param name="image">Raw image bytes (JPEG, PNG, or BMP).</param>
     /// <param name="fileName">File name sent in the multipart form — used for logging.</param>
     public async Task<AlprResult> RecognizeAsync(
-        byte[]  image,
-        string  fileName = "plate.jpg")
+        byte[] image,
+        string fileName = "plate.jpg")
     {
         if (image == null || image.Length == 0)
             return Fail("empty image");
@@ -89,7 +89,6 @@ public sealed class SatpaClient
             if (!response.IsSuccessStatusCode)
                 return Fail($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
 
-            // Deserialize using the AlprResponse DTO (snake_case JSON property names)
             var data = await response.Content
                 .ReadFromJsonAsync<AlprResponse>()
                 .ConfigureAwait(false);
@@ -114,7 +113,6 @@ public sealed class SatpaClient
                     data.OcrChars, data.Plate);
                 return Fail($"invalid char count ({data.OcrChars})");
             }
-
             var plate = Normalize(data.Plate ?? string.Empty);
             _logger.LogInformation(
                 "ALPR OK: {Plate}  conf={Conf:F2}  latency={Lat}ms",
@@ -130,9 +128,6 @@ public sealed class SatpaClient
             };
         }
         catch (TaskCanceledException)
-        {
-            return Fail($"timeout after {_opt.TimeoutSeconds}s");
-        }
         catch (HttpRequestException ex)
         {
             return Fail($"network error: {ex.Message}");
@@ -168,13 +163,11 @@ public sealed class SatpaClient
             return string.Empty;
 
         return plate
-            // Persian-extended digits → ASCII digits
             .Replace('\u06f0', '0').Replace('\u06f1', '1')
             .Replace('\u06f2', '2').Replace('\u06f3', '3')
             .Replace('\u06f4', '4').Replace('\u06f5', '5')
             .Replace('\u06f6', '6').Replace('\u06f7', '7')
             .Replace('\u06f8', '8').Replace('\u06f9', '9')
-            // Remove the ایران token — not needed when stored in the DB
             .Replace("ایران", string.Empty)
             .Replace("IRAN",  string.Empty)
             .Replace("IR",    string.Empty)
@@ -187,12 +180,16 @@ public sealed class SatpaClient
     private AlprResult Fail(string message)
     {
         _logger.LogWarning("SatpaClient: {Msg}", message);
+        return new AlprResult
         {
             Success      = false,
             Plate        = string.Empty,
             Confidence   = -1,
             CharCount    = 0,
-}            ErrorMessage = message,
+            ErrorMessage = message,
         };
     }
+}        {
+            return Fail($"timeout after {_opt.TimeoutSeconds}s");
+        }
 

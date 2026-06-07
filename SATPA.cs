@@ -1,52 +1,67 @@
-﻿using System.Net.Http.Json;
+// SATPA.cs — Typed HttpClient for the Iranian ALPR FastAPI service.
+//
+// Registration in Program.cs:
+//   builder.Services.Configure<AlprOptions>(builder.Configuration.GetSection("Alpr"));
+//   builder.Services.AddHttpClient<SatpaClient>();
+//
+// Injected into HomeController via constructor.
+
+using System.Net.Http.Json;
 using Microsoft.Extensions.Options;
+using mYPMS.Models;
 
 namespace mYPMS.Models;
 
-// SatpaClient — typed HttpClient for FastAPI ALPR server
-// Registered in Program.cs:
-//   builder.Services.AddHttpClient<SatpaClient>();
-//   builder.Services.Configure<AlprOptions>(builder.Configuration.GetSection("Alpr"));
-//
-// Injected into HomeController via constructor.
-// Replaces static Satpa.cs — fully async, no deadlock risk.
-
-public class SatpaClient
+/// <summary>
+/// Typed HttpClient that calls the Iranian ALPR FastAPI service.
+/// Handles image upload, response deserialization, confidence gating,
+/// character-count gating, and plate normalization.
+/// </summary>
+public sealed class SatpaClient
 {
-    private readonly HttpClient  _http;
-    private readonly AlprOptions _opt;
+    private readonly HttpClient          _http;
+    private readonly AlprOptions         _opt;
     private readonly ILogger<SatpaClient> _logger;
 
     public SatpaClient(
-        HttpClient http,
-        IOptions<AlprOptions> opt,
-        ILogger<SatpaClient> logger)
+        HttpClient                 http,
+        IOptions<AlprOptions>      opt,
+        ILogger<SatpaClient>       logger)
     {
         _opt    = opt.Value;
         _logger = logger;
 
-        http.BaseAddress = new Uri(_opt.BaseUrl);
-        http.Timeout     = TimeSpan.FromSeconds(_opt.TimeoutSeconds);
+        http.BaseAddress = new Uri(_opt.BaseUrl.TrimEnd('/') + "/");
+        http.Timeout     = TimeSpan.FromSeconds(
+            _opt.TimeoutSeconds > 0 ? _opt.TimeoutSeconds : 10);
+
         _http = http;
     }
 
-    // ── Health check ─────────────────────────────────────────────────────────
+    // ── Health check ──────────────────────────────────────────────────────────
 
+    /// <summary>Returns true if the ALPR service is reachable and healthy.</summary>
     public async Task<bool> IsAliveAsync()
     {
         try
         {
-            var r = await _http.GetAsync("/health");
+            var r = await _http.GetAsync("health").ConfigureAwait(false);
             return r.IsSuccessStatusCode;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogDebug(ex, "ALPR health check failed");
             return false;
         }
     }
 
     // ── Main recognition call ─────────────────────────────────────────────────
 
+    /// <summary>
+    /// Upload raw image bytes to the ALPR API and return a parsed result.
+    /// </summary>
+    /// <param name="image">Raw image bytes (JPEG, PNG, or BMP).</param>
+    /// <param name="fileName">File name sent in the multipart form — used for logging.</param>
     public async Task<AlprResult> RecognizeAsync(
         byte[]  image,
         string  fileName = "plate.jpg")
@@ -56,50 +71,61 @@ public class SatpaClient
 
         using var form        = new MultipartFormDataContent();
         var       fileContent = new ByteArrayContent(image);
+
         fileContent.Headers.ContentType =
-            new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
+            new System.Net.Http.Headers.MediaTypeHeaderValue(
+                fileName.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                    ? "image/png"
+                    : "image/jpeg");
+
         form.Add(fileContent, "file", fileName);
 
         try
         {
-            var response = await _http.PostAsync("/recognize", form);
+            using var response = await _http
+                .PostAsync("recognize", form)
+                .ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
-                return Fail($"HTTP {(int)response.StatusCode}");
+                return Fail($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
 
+            // Deserialize using the AlprResponse DTO (snake_case JSON property names)
             var data = await response.Content
-                                     .ReadFromJsonAsync<AlprResponse>();
+                .ReadFromJsonAsync<AlprResponse>()
+                .ConfigureAwait(false);
 
-            if (data == null || !data.success)
-                return Fail("invalid response from API");
+            if (data is null || !data.Success)
+                return Fail("API returned success=false or null body");
 
             // ── Confidence gate ───────────────────────────────────────────────
-            if (data.confidence < _opt.MinConfidence)
+            if (data.Confidence < _opt.MinConfidence)
             {
                 _logger.LogWarning(
-                    "ALPR low confidence {Conf:F2} < {Min:F2} for plate '{Plate}'",
-                    data.confidence, _opt.MinConfidence, data.plate);
-                return Fail($"low confidence ({data.confidence:F2})");
+                    "ALPR low confidence {Conf:F2} < threshold {Min:F2} for plate '{Plate}'",
+                    data.Confidence, _opt.MinConfidence, data.Plate);
+                return Fail($"low confidence ({data.Confidence:F2})");
             }
 
-            // ── Length gate ───────────────────────────────────────────────────
-            if (data.ocr_chars != 8)
+            // ── Character-count gate ──────────────────────────────────────────
+            if (data.OcrChars != 8)
             {
                 _logger.LogWarning(
                     "ALPR invalid char count {Count} for plate '{Plate}'",
-                    data.ocr_chars, data.plate);
-                return Fail($"invalid char count ({data.ocr_chars})");
+                    data.OcrChars, data.Plate);
+                return Fail($"invalid char count ({data.OcrChars})");
             }
 
-            var plate = Normalize(data.plate);
-            _logger.LogInformation("ALPR OK: {Plate}  conf={Conf:F2}", plate, data.confidence);
+            var plate = Normalize(data.Plate ?? string.Empty);
+            _logger.LogInformation(
+                "ALPR OK: {Plate}  conf={Conf:F2}  latency={Lat}ms",
+                plate, data.Confidence, data.ApiLatencyMs);
 
             return new AlprResult
             {
                 Success      = true,
                 Plate        = plate,
-                Confidence   = data.confidence,
-                CharCount    = data.ocr_chars,
+                Confidence   = data.Confidence,
+                CharCount    = data.OcrChars,
                 ErrorMessage = string.Empty,
             };
         }
@@ -113,55 +139,60 @@ public class SatpaClient
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "SatpaClient.RecognizeAsync threw");
+            _logger.LogError(ex, "SatpaClient.RecognizeAsync threw unexpectedly");
             return Fail(ex.Message);
         }
     }
 
-    // ── Convenience overload: read from file path ─────────────────────────────
+    // ── File-path overload ────────────────────────────────────────────────────
 
+    /// <summary>Read an image from disk and call <see cref="RecognizeAsync"/>.</summary>
     public async Task<AlprResult> RecognizeFileAsync(string fullPath)
     {
-        if (!System.IO.File.Exists(fullPath))
+        if (!File.Exists(fullPath))
             return Fail($"file not found: {fullPath}");
 
-        var bytes = await System.IO.File.ReadAllBytesAsync(fullPath);
-        return await RecognizeAsync(bytes, Path.GetFileName(fullPath));
+        var bytes = await File.ReadAllBytesAsync(fullPath).ConfigureAwait(false);
+        return await RecognizeAsync(bytes, Path.GetFileName(fullPath)).ConfigureAwait(false);
     }
 
-    // ── Normalize plate string ────────────────────────────────────────────────
-    // Converts Persian digits to ASCII, strips noise tokens (IRAN, IR).
+    // ── Plate normalization ───────────────────────────────────────────────────
 
+    /// <summary>
+    /// Convert Persian-extended digits to ASCII and strip noise tokens.
+    /// Persian-extended digit range: U+06F0–U+06F9
+    /// </summary>
     private static string Normalize(string plate)
     {
         if (string.IsNullOrWhiteSpace(plate))
             return string.Empty;
 
         return plate
-            .Replace("\u06f0", "0").Replace("\u06f1", "1")
-            .Replace("\u06f2", "2").Replace("\u06f3", "3")
-            .Replace("\u06f4", "4").Replace("\u06f5", "5")
-            .Replace("\u06f6", "6").Replace("\u06f7", "7")
-            .Replace("\u06f8", "8").Replace("\u06f9", "9")
-            .Replace("\u0627\u06cc\u0631\u0627\u0646", "")  // ایران
-            .Replace("IRAN", "")
-            .Replace("IR", "")
-            .Replace("\0", "")
+            // Persian-extended digits → ASCII digits
+            .Replace('\u06f0', '0').Replace('\u06f1', '1')
+            .Replace('\u06f2', '2').Replace('\u06f3', '3')
+            .Replace('\u06f4', '4').Replace('\u06f5', '5')
+            .Replace('\u06f6', '6').Replace('\u06f7', '7')
+            .Replace('\u06f8', '8').Replace('\u06f9', '9')
+            // Remove the ایران token — not needed when stored in the DB
+            .Replace("ایران", string.Empty)
+            .Replace("IRAN",  string.Empty)
+            .Replace("IR",    string.Empty)
+            .Replace("\0",    string.Empty)
             .Trim();
     }
 
-    // ── Fail helper ───────────────────────────────────────────────────────────
+    // ── Failure helper ────────────────────────────────────────────────────────
 
-    private AlprResult Fail(string msg)
+    private AlprResult Fail(string message)
     {
-        _logger.LogWarning("SatpaClient fail: {Msg}", msg);
-        return new AlprResult
+        _logger.LogWarning("SatpaClient: {Msg}", message);
         {
             Success      = false,
             Plate        = string.Empty,
             Confidence   = -1,
             CharCount    = 0,
-            ErrorMessage = msg,
+}            ErrorMessage = message,
         };
     }
-}
+
